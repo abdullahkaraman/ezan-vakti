@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ezan Vakti</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main id="times">
+      <header>
+        <h1 id="location">Konum seçilmedi</h1>
+        <button id="change" type="button">Konumu değiştir</button>
+      </header>
+      <section class="countdown" aria-live="polite">
+        <span id="next"></span>
+        <strong id="remaining">—</strong>
+      </section>
+      <ol id="rows"></ol>
+      <p id="zone" class="note"></p>
+      <p id="error" class="error" hidden></p>
+    </main>
+
+    <form id="picker" hidden>
+      <h1>Konum seç</h1>
+      <label>Ülke <select id="country" required></select></label>
+      <label>Şehir <select id="city" required></select></label>
+      <label>İlçe <select id="district" required></select></label>
+      <p id="picker-error" class="error" hidden></p>
+      <div class="actions">
+        <button id="cancel" type="button">Vazgeç</button>
+        <button id="save" type="submit" class="primary">Kaydet</button>
+      </div>
+    </form>
+  </body>
+</html>

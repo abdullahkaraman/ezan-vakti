@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Created up front: two parallel builds racing to create it can leave two drafts.
+      - run: gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "Ezan Vakti $GITHUB_REF_NAME" --notes-file .github/release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+            args: --target universal-apple-darwin --bundles dmg
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc
+            args: --bundles nsis
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add ${{ matrix.targets }}
+      - run: pnpm install --frozen-lockfile
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
+          args: ${{ matrix.args }}

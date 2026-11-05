@@ -1,0 +1,14 @@
+{
+  "name": "ezan-vakti",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.6.0",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build --bundles app"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4"
+  }
+}
