@@ -54,3 +54,12 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseDraft: true
           args: ${{ matrix.args }}
+
+  finalize:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: .github/scripts/public-update-urls.sh "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
