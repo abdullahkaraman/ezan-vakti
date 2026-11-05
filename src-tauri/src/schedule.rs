@@ -3,6 +3,7 @@
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Prayer {
@@ -46,6 +47,104 @@ impl Prayer {
             Prayer::Yatsi => "Yatsı'ya",
         }
     }
+}
+
+/// A prayer period. Güneş is not one: it is the moment Sabah leaves, and no
+/// period is active from then until Öğle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Vakit {
+    Sabah,
+    Ogle,
+    Ikindi,
+    Aksam,
+    Yatsi,
+}
+
+impl Vakit {
+    pub const ALL: [Vakit; 5] = [
+        Vakit::Sabah,
+        Vakit::Ogle,
+        Vakit::Ikindi,
+        Vakit::Aksam,
+        Vakit::Yatsi,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Vakit::Sabah => "Sabah",
+            Vakit::Ogle => "Öğle",
+            Vakit::Ikindi => "İkindi",
+            Vakit::Aksam => "Akşam",
+            Vakit::Yatsi => "Yatsı",
+        }
+    }
+
+    pub fn start(self) -> Prayer {
+        match self {
+            Vakit::Sabah => Prayer::Imsak,
+            Vakit::Ogle => Prayer::Ogle,
+            Vakit::Ikindi => Prayer::Ikindi,
+            Vakit::Aksam => Prayer::Aksam,
+            Vakit::Yatsi => Prayer::Yatsi,
+        }
+    }
+
+    /// The boundary at which this period goes out.
+    pub fn end(self) -> Prayer {
+        match self {
+            Vakit::Sabah => Prayer::Gunes,
+            Vakit::Ogle => Prayer::Ikindi,
+            Vakit::Ikindi => Prayer::Aksam,
+            Vakit::Aksam => Prayer::Yatsi,
+            Vakit::Yatsi => Prayer::Imsak,
+        }
+    }
+}
+
+/// Minutes before the end of each period; a missing period has no reminder.
+pub type Reminders = BTreeMap<Vakit, u32>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Due {
+    pub vakit: Vakit,
+    pub minutes_left: i64,
+}
+
+impl Due {
+    pub fn message(&self) -> String {
+        format!(
+            "{} vaktinin çıkmasına {} dakika kaldı",
+            self.vakit.name(),
+            self.minutes_left
+        )
+    }
+}
+
+/// Reminders whose moment fell in `(after, now]` and whose period is still in.
+///
+/// A Mac asleep through the moment catches up on wake, reporting the time really
+/// left; if the period ended meanwhile a late reminder would be false, so it is
+/// dropped. Because `after` starts at launch, restarting cannot repeat one.
+pub fn due_reminders(
+    list: &[Boundary],
+    reminders: &Reminders,
+    after: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Vec<Due> {
+    let mut due = Vec::new();
+    for (&vakit, &minutes) in reminders {
+        for boundary in list.iter().filter(|b| b.prayer == vakit.end()) {
+            let moment = boundary.at - Duration::minutes(i64::from(minutes));
+            if after < moment && moment <= now && now < boundary.at {
+                let left = (boundary.at - now).num_seconds();
+                due.push(Due {
+                    vakit,
+                    minutes_left: (left + 59) / 60,
+                });
+            }
+        }
+    }
+    due
 }
 
 /// One day's published wall-clock times, in `Prayer::ALL` order.
@@ -104,6 +203,11 @@ pub fn boundaries(days: &[DayTimes], tz: Tz) -> Vec<Boundary> {
     }
     list.sort_by_key(|boundary| boundary.at);
     list
+}
+
+/// Which row the window highlights: none between Güneş and Öğle.
+pub fn active_prayer(status: &Status) -> Option<Prayer> {
+    status.current.filter(|prayer| *prayer != Prayer::Gunes)
 }
 
 /// `None` means the data has run out: showing nothing beats showing a wrong time.
@@ -202,6 +306,96 @@ mod tests {
             assert_eq!(status.current, current, "{time}");
             assert_eq!(status.next.prayer, next, "{time}");
         }
+    }
+
+    #[test]
+    fn nothing_is_active_between_gunes_and_ogle() {
+        let list = boundaries(&[sample("2026-11-05")], Istanbul);
+        let morning = status(&list, at(Istanbul, "2026-11-05 07:00:00")).unwrap();
+        assert_eq!(active_prayer(&morning), Some(Prayer::Imsak));
+        assert_eq!(morning.next.prayer, Prayer::Gunes);
+
+        let forenoon = status(&list, at(Istanbul, "2026-11-05 09:00:00")).unwrap();
+        assert_eq!(active_prayer(&forenoon), None);
+        assert_eq!(title(&forenoon), "Öğle'ye 3 sa 50 dk");
+    }
+
+    fn reminders(entries: &[(Vakit, u32)]) -> Reminders {
+        entries.iter().copied().collect()
+    }
+
+    #[test]
+    fn sabah_ends_at_gunes_and_no_period_ends_at_ogle() {
+        assert_eq!(Vakit::Sabah.end(), Prayer::Gunes);
+        assert!(Vakit::ALL.iter().all(|vakit| vakit.end() != Prayer::Ogle));
+        assert!(Vakit::ALL
+            .iter()
+            .all(|vakit| vakit.start() != Prayer::Gunes));
+    }
+
+    #[test]
+    fn a_reminder_fires_once_at_its_moment() {
+        let list = boundaries(&[sample("2026-11-05")], Istanbul);
+        let wanted = reminders(&[(Vakit::Sabah, 15)]);
+        let moment = at(Istanbul, "2026-11-05 07:15:00");
+        let second = Duration::seconds(1);
+
+        assert!(due_reminders(&list, &wanted, moment - second * 2, moment - second).is_empty());
+        let due = due_reminders(&list, &wanted, moment - second, moment);
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].message(), "Sabah vaktinin çıkmasına 15 dakika kaldı");
+        assert!(due_reminders(&list, &wanted, moment, moment + second).is_empty());
+    }
+
+    #[test]
+    fn each_period_reminds_before_its_own_end() {
+        let days = [sample("2026-11-05"), sample("2026-11-06")];
+        let list = boundaries(&days, Istanbul);
+        let cases = [
+            (Vakit::Ogle, "2026-11-05 15:20:00"),
+            (Vakit::Ikindi, "2026-11-05 17:50:00"),
+            (Vakit::Aksam, "2026-11-05 19:10:00"),
+            (Vakit::Yatsi, "2026-11-06 05:50:00"),
+        ];
+        for (vakit, moment) in cases {
+            let now = at(Istanbul, moment);
+            let due = due_reminders(
+                &list,
+                &reminders(&[(vakit, 10)]),
+                now - Duration::seconds(1),
+                now,
+            );
+            assert_eq!(due.len(), 1, "{moment}");
+            assert_eq!(due[0].vakit, vakit);
+            assert_eq!(due[0].minutes_left, 10);
+        }
+    }
+
+    #[test]
+    fn waking_inside_the_period_reports_the_real_time_left() {
+        let list = boundaries(&[sample("2026-11-05")], Istanbul);
+        let wanted = reminders(&[(Vakit::Ogle, 30)]);
+        let slept = at(Istanbul, "2026-11-05 14:00:00");
+        let woke = at(Istanbul, "2026-11-05 15:18:30");
+        let due = due_reminders(&list, &wanted, slept, woke);
+        assert_eq!(due[0].minutes_left, 12);
+    }
+
+    #[test]
+    fn waking_after_the_period_stays_silent() {
+        let list = boundaries(&[sample("2026-11-05")], Istanbul);
+        let wanted = reminders(&[(Vakit::Ogle, 30)]);
+        let slept = at(Istanbul, "2026-11-05 14:00:00");
+        let woke = at(Istanbul, "2026-11-05 15:30:00");
+        assert!(due_reminders(&list, &wanted, slept, woke).is_empty());
+    }
+
+    #[test]
+    fn no_reminders_means_no_notifications() {
+        let list = boundaries(&[sample("2026-11-05")], Istanbul);
+        let start = at(Istanbul, "2026-11-05 00:00:00");
+        let end = at(Istanbul, "2026-11-05 23:59:00");
+        assert!(due_reminders(&list, &Reminders::new(), start, end).is_empty());
     }
 
     #[test]

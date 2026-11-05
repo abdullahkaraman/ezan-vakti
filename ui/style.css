@@ -180,3 +180,45 @@ select {
   cursor: default;
   opacity: 0.5;
 }
+
+footer {
+  align-items: baseline;
+  display: flex;
+  justify-content: space-between;
+  margin-top: auto;
+}
+
+.banner {
+  align-items: center;
+  background: var(--accent-soft);
+  border-radius: 8px;
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+.banner button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+#reminder-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#reminder-rows label {
+  align-items: center;
+  color: var(--text);
+  flex-direction: row;
+  font-size: 14px;
+  justify-content: space-between;
+}
+
+#reminder-rows select {
+  width: 120px;
+}

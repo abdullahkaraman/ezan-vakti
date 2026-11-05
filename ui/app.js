@@ -9,11 +9,13 @@ const levels = {
   city: element("city"),
   district: element("district"),
 };
+const reminderChoices = [5, 10, 15, 20, 30, 45, 60];
 const lists = { country: [], city: [], district: [] };
 
 // A newer selection invalidates any list request still in flight.
 let selectionToken = 0;
 let hasLocation = false;
+let latestView = null;
 
 function showError(target, message) {
   target.textContent = message ?? "";
@@ -21,6 +23,7 @@ function showError(target, message) {
 }
 
 function render(view) {
+  latestView = view;
   hasLocation = view.location !== null;
   element("location").textContent = view.location ?? "Konum seçilmedi";
   element("next").textContent = view.next ?? "";
@@ -43,6 +46,59 @@ function render(view) {
     ? `Konumun saat dilimi bulunamadı, Mac'in saati kullanılıyor (${view.timezone}).`
     : (view.timezone ?? "");
   showError(element("error"), view.error);
+  element("version").textContent = `v${view.version}`;
+  element("update").hidden = !view.update;
+  element("update-text").textContent = view.update ? `Yeni sürüm: ${view.update}` : "";
+}
+
+function reminderRow(row) {
+  const label = document.createElement("label");
+  label.textContent = row.name;
+  const select = document.createElement("select");
+  select.dataset.key = row.key;
+
+  const off = document.createElement("option");
+  off.value = "";
+  off.textContent = "Kapalı";
+  select.append(off);
+  const choices = reminderChoices.includes(row.minutes) || row.minutes === null
+    ? reminderChoices
+    : [...reminderChoices, row.minutes];
+  for (const minutes of choices) {
+    const option = document.createElement("option");
+    option.value = minutes;
+    option.textContent = `${minutes} dk kala`;
+    select.append(option);
+  }
+  select.value = row.minutes ?? "";
+  select.addEventListener("change", saveReminders);
+  label.append(select);
+  return label;
+}
+
+async function saveReminders() {
+  const reminders = {};
+  for (const select of element("reminder-rows").querySelectorAll("select")) {
+    if (select.value) reminders[select.dataset.key] = Number(select.value);
+  }
+  showError(element("reminder-error"), null);
+  try {
+    render(await invoke("set_reminders", { reminders }));
+  } catch (message) {
+    showError(element("reminder-error"), message);
+  }
+}
+
+function openReminders() {
+  times.hidden = true;
+  element("reminders").hidden = false;
+  showError(element("reminder-error"), null);
+  element("reminder-rows").replaceChildren(...latestView.reminders.map(reminderRow));
+}
+
+function closeReminders() {
+  element("reminders").hidden = true;
+  times.hidden = false;
 }
 
 function fill(level, items) {
@@ -125,6 +181,29 @@ levels.city.addEventListener("change", loadDistricts);
 levels.district.addEventListener("change", syncSave);
 element("change").addEventListener("click", openPicker);
 element("cancel").addEventListener("click", closePicker);
+
+element("open-reminders").addEventListener("click", openReminders);
+element("close-reminders").addEventListener("click", closeReminders);
+element("reminders").addEventListener("submit", (event) => event.preventDefault());
+element("test").addEventListener("click", async () => {
+  try {
+    await invoke("test_notification");
+  } catch (message) {
+    showError(element("reminder-error"), message);
+  }
+});
+element("install").addEventListener("click", async () => {
+  const install = element("install");
+  install.disabled = true;
+  install.textContent = "Kuruluyor…";
+  try {
+    await invoke("install_update");
+  } catch (message) {
+    showError(element("error"), message);
+    install.disabled = false;
+    install.textContent = "Güncelle";
+  }
+});
 
 picker.addEventListener("submit", async (event) => {
   event.preventDefault();

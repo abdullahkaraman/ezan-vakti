@@ -6,7 +6,7 @@ pub mod tray_digits;
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Tz;
 use diyanet::{Api, Item};
-use schedule::{Boundary, Prayer};
+use schedule::{Boundary, Prayer, Reminders, Vakit};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -17,11 +17,16 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, WindowEvent,
 };
+use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const REFRESH_BELOW_DAYS: i64 = 7;
 const RETRY_AFTER_MINUTES: i64 = 60;
 const LIST_MAX_AGE_DAYS: i64 = 30;
 const EDGE_MARGIN: f64 = 8.0;
+const FIRST_UPDATE_CHECK_SECONDS: i64 = 20;
+const UPDATE_CHECK_HOURS: i64 = 6;
+const MAX_REMINDER_MINUTES: u32 = 120;
 // The monochrome template image only works on the macOS menu bar; on a dark
 // Windows taskbar it would be invisible.
 #[cfg(target_os = "macos")]
@@ -40,6 +45,13 @@ struct Row {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+struct ReminderRow {
+    key: Vakit,
+    name: &'static str,
+    minutes: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 struct View {
     title: String,
     #[serde(skip)]
@@ -51,6 +63,9 @@ struct View {
     timezone_guessed: bool,
     rows: Vec<Row>,
     error: Option<String>,
+    reminders: Vec<ReminderRow>,
+    version: &'static str,
+    update: Option<String>,
 }
 
 struct Live {
@@ -60,6 +75,9 @@ struct Live {
     error: Option<String>,
     next_attempt: DateTime<Utc>,
     refreshing: bool,
+    reminders_checked: DateTime<Utc>,
+    next_update_check: DateTime<Utc>,
+    update: Option<String>,
 }
 
 fn mac_zone() -> Tz {
@@ -89,6 +107,9 @@ impl Live {
             error: None,
             next_attempt: now,
             refreshing: false,
+            reminders_checked: now,
+            next_update_check: now + Duration::seconds(FIRST_UPDATE_CHECK_SECONDS),
+            update: None,
         }
     }
 
@@ -113,7 +134,7 @@ impl Live {
             (Some(_), None) => "Vakit yok".to_string(),
             (Some(_), Some(status)) => schedule::title(status),
         };
-        let current = status.as_ref().and_then(|status| status.current);
+        let active = status.as_ref().and_then(schedule::active_prayer);
         let rows = schedule::today(&self.saved.days, self.zone, now)
             .map(|day| {
                 Prayer::ALL
@@ -122,7 +143,7 @@ impl Live {
                     .map(|(prayer, time)| Row {
                         name: prayer.name(),
                         time: time.format("%H:%M").to_string(),
-                        current: current == Some(prayer),
+                        current: active == Some(prayer),
                     })
                     .collect()
             })
@@ -147,6 +168,16 @@ impl Live {
             timezone_guessed: location.is_some_and(|l| l.timezone.is_none()),
             rows,
             error: self.error.clone(),
+            reminders: Vakit::ALL
+                .into_iter()
+                .map(|vakit| ReminderRow {
+                    key: vakit,
+                    name: vakit.name(),
+                    minutes: self.saved.reminders.get(&vakit).copied(),
+                })
+                .collect(),
+            version: env!("CARGO_PKG_VERSION"),
+            update: self.update.clone(),
         }
     }
 }
@@ -155,6 +186,7 @@ struct Core {
     api: Api,
     store: Store,
     live: Mutex<Live>,
+    update: Mutex<Option<Update>>,
     hidden_at: Mutex<Option<Instant>>,
 }
 
@@ -250,28 +282,114 @@ async fn set_location(
             &district.name_en,
         )
         .await;
-    let saved = Saved {
-        location: Some(Location {
-            country_id: country.id,
-            country_en: country.name_en,
-            city: city.name,
-            city_en: city.name_en,
-            district_id: district.id,
-            district: district.name,
-            district_en: district.name_en,
-            timezone,
-        }),
-        days,
+    let location = Location {
+        country_id: country.id,
+        country_en: country.name_en,
+        city: city.name,
+        city_en: city.name_en,
+        district_id: district.id,
+        district: district.name,
+        district_en: district.name_en,
+        timezone,
     };
-    core.store.save(&saved);
     let view = {
         let mut live = core.live.lock().unwrap();
+        let saved = Saved {
+            location: Some(location),
+            days,
+            reminders: live.saved.reminders.clone(),
+        };
+        core.store.save(&saved);
         live.replace(saved);
         live.error = None;
         live.view(Utc::now())
     };
     publish(&app, &view);
     Ok(view)
+}
+
+#[tauri::command]
+fn set_reminders(
+    app: AppHandle,
+    core: State<'_, Core>,
+    reminders: Reminders,
+) -> Result<View, String> {
+    if reminders
+        .values()
+        .any(|minutes| !(1..=MAX_REMINDER_MINUTES).contains(minutes))
+    {
+        return Err("Geçersiz dakika değeri.".into());
+    }
+    let view = {
+        let mut live = core.live.lock().unwrap();
+        let mut saved = live.saved.clone();
+        saved.reminders = reminders;
+        core.store.save(&saved);
+        live.replace(saved);
+        live.view(Utc::now())
+    };
+    publish(&app, &view);
+    Ok(view)
+}
+
+#[tauri::command]
+fn test_notification(app: AppHandle) -> Result<(), String> {
+    notify(&app, "Ezan Vakti", "Bildirimler çalışıyor.")
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle, core: State<'_, Core>) -> Result<(), String> {
+    let update = core.update.lock().unwrap().clone();
+    let Some(update) = update else {
+        return Err("Şu an kurulacak bir güncelleme yok.".into());
+    };
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| {
+            eprintln!("güncelleme kurulamadı: {error}");
+            "Güncelleme kurulamadı. Biraz sonra tekrar dene.".to_string()
+        })?;
+    app.restart()
+}
+
+fn notify(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| error.to_string())
+}
+
+/// Failures stay silent: a missed check only delays an update by one interval.
+async fn check_update(app: AppHandle) {
+    let found = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(error) => Err(error),
+    };
+    let update = match found {
+        Ok(Some(update)) => update,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("güncelleme denetlenemedi: {error}");
+            return;
+        }
+    };
+    let version = update.version.clone();
+    let core = app.state::<Core>();
+    *core.update.lock().unwrap() = Some(update);
+    let announced = {
+        let mut live = core.live.lock().unwrap();
+        live.update.replace(version.clone()) == Some(version.clone())
+    };
+    if !announced {
+        let _ = notify(
+            &app,
+            "Ezan Vakti güncellemesi",
+            &format!("{version} hazır. Kurmak için uygulama penceresini aç."),
+        );
+    }
 }
 
 fn publish(app: &AppHandle, view: &View) {
@@ -344,6 +462,7 @@ async fn refresh(app: AppHandle, location: Location) {
                     ..location
                 }),
                 days,
+                reminders: live.saved.reminders.clone(),
             };
             core.store.save(&saved);
             live.replace(saved);
@@ -360,8 +479,19 @@ async fn run_ticker(app: AppHandle) {
     loop {
         let now = Utc::now();
         let core = app.state::<Core>();
-        let (view, pending) = {
+        let (view, pending, due, check) = {
             let mut live = core.live.lock().unwrap();
+            let due = schedule::due_reminders(
+                &live.boundaries,
+                &live.saved.reminders,
+                live.reminders_checked,
+                now,
+            );
+            live.reminders_checked = now;
+            let check = now >= live.next_update_check;
+            if check {
+                live.next_update_check = now + Duration::hours(UPDATE_CHECK_HOURS);
+            }
             let pending = if live.needs_refresh(now) {
                 // Set on every attempt, success included: if the server keeps
                 // returning a short list this must not become one request a second.
@@ -371,8 +501,14 @@ async fn run_ticker(app: AppHandle) {
             } else {
                 None
             };
-            (live.view(now), pending)
+            (live.view(now), pending, due, check)
         };
+        for reminder in due {
+            let _ = notify(&app, "Ezan Vakti", &reminder.message());
+        }
+        if check {
+            tauri::async_runtime::spawn(check_update(app.clone()));
+        }
         if let Some(location) = pending {
             tauri::async_runtime::spawn(refresh(app.clone(), location));
         }
@@ -503,12 +639,17 @@ pub fn run() {
     }));
 
     builder
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_view,
             list_countries,
             list_cities,
             list_districts,
-            set_location
+            set_location,
+            set_reminders,
+            test_notification,
+            install_update
         ])
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
@@ -535,6 +676,7 @@ pub fn run() {
                 api: Api::new(),
                 store,
                 live: Mutex::new(live),
+                update: Mutex::new(None),
                 hidden_at: Mutex::new(None),
             });
             build_tray(app.handle())?;
@@ -571,6 +713,7 @@ mod tests {
         let saved = Saved {
             location: Some(location(Some("Europe/Istanbul"))),
             days: diyanet::parse_times(body).unwrap(),
+            reminders: Reminders::new(),
         };
         Live::new(saved, now)
     }
@@ -640,6 +783,21 @@ mod tests {
         assert_eq!(current.len(), 1);
         assert_eq!(current[0].name, "Öğle");
         assert!(view.title.starts_with("İkindi'ye "), "{}", view.title);
+    }
+
+    #[test]
+    fn no_row_is_highlighted_between_gunes_and_ogle() {
+        // 09:00 in Istanbul on a day whose Güneş is before and Öğle after it.
+        let view = live(Utc::now()).view(instant("2026-11-05T06:00:00Z"));
+        assert!(view.title.starts_with("Öğle'ye "), "{}", view.title);
+        assert!(view.rows.iter().all(|row| !row.current));
+    }
+
+    #[test]
+    fn the_view_lists_the_five_periods_without_gunes() {
+        let view = live(Utc::now()).view(instant("2026-11-05T06:00:00Z"));
+        let names: Vec<_> = view.reminders.iter().map(|row| row.name).collect();
+        assert_eq!(names, ["Sabah", "Öğle", "İkindi", "Akşam", "Yatsı"]);
     }
 
     #[test]

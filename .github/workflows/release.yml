@@ -26,7 +26,7 @@ jobs:
         include:
           - os: macos-latest
             targets: aarch64-apple-darwin x86_64-apple-darwin
-            args: --target universal-apple-darwin --bundles dmg
+            args: --target universal-apple-darwin --bundles app,dmg
           - os: windows-latest
             targets: x86_64-pc-windows-msvc
             args: --bundles nsis
@@ -48,6 +48,8 @@ jobs:
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: ${{ github.ref_name }}
           releaseDraft: true

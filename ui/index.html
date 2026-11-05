@@ -19,7 +19,26 @@
       <ol id="rows"></ol>
       <p id="zone" class="note"></p>
       <p id="error" class="error" hidden></p>
+      <p id="update" class="banner" hidden>
+        <span id="update-text"></span>
+        <button id="install" type="button">Güncelle</button>
+      </p>
+      <footer>
+        <button id="open-reminders" type="button">Bildirimler</button>
+        <span id="version" class="note"></span>
+      </footer>
     </main>
+
+    <form id="reminders" hidden>
+      <h1>Vakit çıkmadan haber ver</h1>
+      <div id="reminder-rows"></div>
+      <p id="reminder-error" class="error" hidden></p>
+      <p class="note">Bildirim gelmiyorsa sistem ayarlarından Ezan Vakti'ye izin ver.</p>
+      <div class="actions">
+        <button id="test" type="button">Dene</button>
+        <button id="close-reminders" type="button" class="primary">Tamam</button>
+      </div>
+    </form>
 
     <form id="picker" hidden>
       <h1>Konum seç</h1>

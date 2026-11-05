@@ -26,6 +26,14 @@ Uygulama ücretli bir geliştirici sertifikasıyla imzalı değildir, bu yüzden
   (`43`, 100 dakikadan sonra saat olarak `2s`); tam metin ikonun üzerine gelince çıkar. İkon görev
   çubuğundaki `^` menüsünde gizliyse sürükleyip görev çubuğuna al.
 
+## Bildirimler ve güncelleme
+
+- Pencerenin altındaki `Bildirimler` bölümünden Sabah, Öğle, İkindi, Akşam ve Yatsı için vaktin
+  çıkmasına kaç dakika kala haber verileceğini seçebilirsin. Sabah vakti Güneş'te çıkar; Güneş'ten
+  Öğle'ye kadar geçerli vakit yoktur, sayaç Öğle'ye sayar.
+- Uygulama açılışta ve 6 saatte bir yeni sürümü denetler. Sürüm varsa bildirim gelir ve pencerede
+  `Güncelle` düğmesi çıkar. **v0.1.0'da bu mekanizma yok; o sürümden bir kez elle güncellemek gerekir.**
+
 ## Çalıştırma
 
 Gereksinimler: Xcode Command Line Tools veya Visual Studio C++ araçları, rustup, Node ve pnpm. Rust sürümü
@@ -52,6 +60,9 @@ cd src-tauri && cargo test
 
 `v*` etiketi GitHub Actions'ta testleri çalıştırır, DMG ve Windows kurulumunu üretip taslak release
 oluşturur. Dosyalar kontrol edilip taslak elle yayınlanır.
+
+Güncellemeler `TAURI_SIGNING_PRIVATE_KEY` secret'ındaki anahtarla imzalanır. Eşi olan anahtar
+`src-tauri/tauri.conf.json` içindedir; anahtar kaybolursa kullanıcılar bir kez elle güncellemek zorunda kalır.
 
 ## Bilinen sınırlar
 

@@ -1,6 +1,6 @@
 [package]
 name = "ezan-vakti"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [lib]
@@ -19,6 +19,8 @@ chrono-tz = "0.10"
 iana-time-zone = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["time"] }
+tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 tauri-plugin-single-instance = "2"

@@ -2,7 +2,7 @@
 //! absent: a corrupt cache must never keep the app from starting.
 
 use crate::diyanet::Item;
-use crate::schedule::DayTimes;
+use crate::schedule::{DayTimes, Reminders};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs;
@@ -26,6 +26,9 @@ pub struct Location {
 pub struct Saved {
     pub location: Option<Location>,
     pub days: Vec<DayTimes>,
+    /// Absent in files written by v0.1.0.
+    #[serde(default)]
+    pub reminders: Reminders,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -118,10 +121,23 @@ mod tests {
         let saved = Saved {
             location: Some(location()),
             days: parse_times(include_str!("../tests/fixtures/vakitler-9541.json")).unwrap(),
+            reminders: [(crate::schedule::Vakit::Ikindi, 15)].into_iter().collect(),
         };
         store.save(&saved);
         assert_eq!(store.load(), saved);
         assert!(!dir.join("state.tmp").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn state_written_by_the_previous_version_still_loads() {
+        let dir = temporary("upgrade");
+        fs::create_dir_all(&dir).unwrap();
+        let old = serde_json::json!({ "location": location(), "days": [] });
+        fs::write(dir.join("state.json"), old.to_string()).unwrap();
+        let saved = Store::new(dir.clone()).load();
+        assert_eq!(saved.location, Some(location()));
+        assert!(saved.reminders.is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 
