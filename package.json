@@ -1,6 +1,7 @@
 {
   "name": "ezan-vakti",
   "private": true,
+  "license": "MIT",
   "version": "0.2.0",
   "packageManager": "pnpm@11.6.0",
   "scripts": {

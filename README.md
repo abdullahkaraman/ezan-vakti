@@ -70,3 +70,7 @@ Güncellemeler `TAURI_SIGNING_PRIVATE_KEY` secret'ındaki anahtarla imzalanır. 
 - Windows ikonu 100 dakikadan sonra yalnız saati gösterir; tam süre ipucu metnindedir.
 - Çalışırken Mac'in saat dilimi değişirse, yalnız saat dilimi çözülememiş konumlar için yeniden
   başlatma gerekir.
+
+## Lisans
+
+[MIT](LICENSE)
