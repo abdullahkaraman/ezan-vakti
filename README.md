@@ -12,11 +12,24 @@ Vakitler Diyanet tablosundan gelir.
 | macOS 12+ (Apple Silicon ve Intel) | `Ezan.Vakti_*_universal.dmg` |
 | Windows 10/11 (64 bit) | `Ezan.Vakti_*_x64-setup.exe` |
 
-Uygulama ücretli bir geliştirici sertifikasıyla imzalı değildir, bu yüzden ilk açılışta sistem uyarır:
+Uygulama ücretli bir geliştirici sertifikasıyla imzalı değildir, bu yüzden ilk açılışta sistem engeller.
 
-- **macOS:** DMG'den uygulamayı `Applications` klasörüne sürükle ve aç. Engellenirse
-  `Sistem Ayarları → Gizlilik ve Güvenlik → Yine de Aç`.
-- **Windows:** "Windows kişisel bilgisayarınızı korudu" ekranında `Ek bilgi → Yine de çalıştır`.
+**macOS** (bir kez yapılır):
+
+1. DMG'yi aç ve uygulamayı `Applications` klasörüne sürükle.
+2. Uygulamayı aç. "Ezan Vakti açılamadı" ya da "doğrulanamadı" uyarısı çıkarsa pencereyi kapat.
+3. `Sistem Ayarları → Gizlilik ve Güvenlik` bölümünde `Güvenlik` başlığına kadar aşağı in.
+4. Ezan Vakti'nin yanındaki `Yine de Aç` düğmesine bas ve parolanla ya da Touch ID ile onayla.
+
+Güvenlik ayarını genel olarak değiştirmen gerekmez. Uygulama Dock'ta görünmez, menü çubuğuna yerleşir.
+
+"Hasarlı" uyarısı çıkarsa Terminal'de şunu çalıştırıp yeniden aç:
+
+```sh
+xattr -cr "/Applications/Ezan Vakti.app"
+```
+
+**Windows:** "Windows kişisel bilgisayarınızı korudu" ekranında `Ek bilgi → Yine de çalıştır`.
 
 ## Kullanım
 
