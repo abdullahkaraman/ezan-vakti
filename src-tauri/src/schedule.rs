@@ -79,6 +79,17 @@ impl Vakit {
         }
     }
 
+    /// Stable lowercase ASCII name for stored data.
+    pub fn key(self) -> &'static str {
+        match self {
+            Vakit::Sabah => "sabah",
+            Vakit::Ogle => "ogle",
+            Vakit::Ikindi => "ikindi",
+            Vakit::Aksam => "aksam",
+            Vakit::Yatsi => "yatsi",
+        }
+    }
+
     pub fn start(self) -> Prayer {
         match self {
             Vakit::Sabah => Prayer::Imsak,
@@ -118,6 +129,14 @@ impl Due {
             self.minutes_left
         )
     }
+
+    pub fn question(&self) -> String {
+        format!(
+            "{} vaktinin çıkmasına {} dakika var. Namazı kıldın mı?",
+            self.vakit.name(),
+            self.minutes_left
+        )
+    }
 }
 
 /// Reminders whose moment fell in `(after, now]` and whose period is still in.
@@ -145,6 +164,21 @@ pub fn due_reminders(
         }
     }
     due
+}
+
+/// The day the period began on, in the location's zone: a Yatsı that runs past
+/// midnight still belongs to the evening it started.
+pub fn prayer_day(
+    list: &[Boundary],
+    tz: Tz,
+    vakit: Vakit,
+    now: DateTime<Utc>,
+) -> Option<NaiveDate> {
+    list.iter()
+        .filter(|b| b.prayer == vakit.start() && b.at <= now)
+        .map(|b| b.at)
+        .max()
+        .map(|at| at.with_timezone(&tz).date_naive())
 }
 
 /// One day's published wall-clock times, in `Prayer::ALL` order.
@@ -345,6 +379,34 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].message(), "Sabah vaktinin çıkmasına 15 dakika kaldı");
         assert!(due_reminders(&list, &wanted, moment, moment + second).is_empty());
+    }
+
+    #[test]
+    fn a_prayer_day_is_the_date_the_period_began() {
+        let days = [sample("2026-11-05"), sample("2026-11-06")];
+        let list = boundaries(&days, Istanbul);
+        let after_midnight = at(Istanbul, "2026-11-06 05:50:00");
+        assert_eq!(
+            prayer_day(&list, Istanbul, Vakit::Yatsi, after_midnight),
+            NaiveDate::from_ymd_opt(2026, 11, 5)
+        );
+        let afternoon = at(Istanbul, "2026-11-05 15:20:00");
+        assert_eq!(
+            prayer_day(&list, Istanbul, Vakit::Ogle, afternoon),
+            NaiveDate::from_ymd_opt(2026, 11, 5)
+        );
+    }
+
+    #[test]
+    fn a_due_reminder_asks_whether_the_prayer_was_performed() {
+        let due = Due {
+            vakit: Vakit::Ogle,
+            minutes_left: 20,
+        };
+        assert_eq!(
+            due.question(),
+            "Öğle vaktinin çıkmasına 20 dakika var. Namazı kıldın mı?"
+        );
     }
 
     #[test]

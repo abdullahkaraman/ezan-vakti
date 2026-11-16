@@ -1,9 +1,10 @@
 pub mod diyanet;
+pub mod prayer_log;
 pub mod schedule;
 pub mod store;
 pub mod tray_digits;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use chrono_tz::Tz;
 use diyanet::{Api, Item};
 use schedule::{Boundary, Prayer, Reminders, Vakit};
@@ -15,7 +16,8 @@ use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, Rect, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, Rect, State, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -27,6 +29,13 @@ const EDGE_MARGIN: f64 = 8.0;
 const FIRST_UPDATE_CHECK_SECONDS: i64 = 20;
 const UPDATE_CHECK_HOURS: i64 = 6;
 const MAX_REMINDER_MINUTES: u32 = 120;
+const PRAYER_CHECK: &str = "prayer-check";
+const PRAYER_CHECK_WIDTH: f64 = 340.0;
+const PRAYER_CHECK_HEIGHT: f64 = 150.0;
+const PRAYER_CHECK_MARGIN: f64 = 16.0;
+const CURSOR_OFFSET: f64 = 12.0;
+/// Clears the macOS menu bar.
+const PRAYER_CHECK_TOP: f64 = 36.0;
 // The monochrome template image only works on the macOS menu bar; on a dark
 // Windows taskbar it would be invisible.
 #[cfg(target_os = "macos")]
@@ -188,6 +197,8 @@ struct Core {
     live: Mutex<Live>,
     update: Mutex<Option<Update>>,
     hidden_at: Mutex<Option<Instant>>,
+    /// The question on screen, if it has not been answered yet.
+    pending: Mutex<Option<prayer_log::Pending>>,
 }
 
 impl Core {
@@ -362,6 +373,114 @@ fn notify(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Top-left of the question window in logical units: just below and right of
+/// the cursor, kept inside the monitor under it. The size is logical, so
+/// everything is converted with that monitor's scale factor. Without a cursor
+/// or monitor it sits in the primary monitor's top-right corner.
+fn prayer_check_position(app: &AppHandle) -> Option<(f64, f64)> {
+    if let Ok(cursor) = app.cursor_position() {
+        if let Ok(Some(monitor)) = app.monitor_from_point(cursor.x, cursor.y) {
+            let scale = monitor.scale_factor();
+            return Some(near_cursor(
+                (cursor.x / scale, cursor.y / scale),
+                (
+                    f64::from(monitor.position().x) / scale,
+                    f64::from(monitor.position().y) / scale,
+                    f64::from(monitor.size().width) / scale,
+                    f64::from(monitor.size().height) / scale,
+                ),
+            ));
+        }
+    }
+    let monitor = app.primary_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    let x = f64::from(monitor.position().x) / scale + f64::from(monitor.size().width) / scale
+        - PRAYER_CHECK_WIDTH
+        - PRAYER_CHECK_MARGIN;
+    let y = f64::from(monitor.position().y) / scale + PRAYER_CHECK_TOP;
+    Some((x, y))
+}
+
+/// `screen` is (x, y, width, height).
+fn near_cursor(cursor: (f64, f64), screen: (f64, f64, f64, f64)) -> (f64, f64) {
+    let (sx, sy, sw, sh) = screen;
+    let x = (cursor.0 + CURSOR_OFFSET)
+        .min(sx + sw - PRAYER_CHECK_WIDTH)
+        .max(sx);
+    let y = (cursor.1 + CURSOR_OFFSET)
+        .min(sy + sh - PRAYER_CHECK_HEIGHT)
+        .max(sy);
+    (x, y)
+}
+
+/// Records the question on screen with `answer`, if it has not been recorded.
+/// Failing to write is ignored: the window must close regardless.
+fn record_answer(app: &AppHandle, answer: prayer_log::Answer) {
+    let record = {
+        let core = app.state::<Core>();
+        let mut pending = core.pending.lock().unwrap();
+        prayer_log::resolve(&mut pending, answer, Local::now())
+    };
+    write_record(app, record);
+}
+
+fn write_record(app: &AppHandle, record: Option<prayer_log::Record>) {
+    if let (Some(record), Ok(dir)) = (record, app.path().app_data_dir()) {
+        let _ = prayer_log::append(&dir, &record);
+    }
+}
+
+/// Registers `question` as the one now waiting; the one it replaces is logged
+/// as unanswered.
+fn begin_question(app: &AppHandle, question: prayer_log::Pending) {
+    let record = {
+        let core = app.state::<Core>();
+        let mut pending = core.pending.lock().unwrap();
+        prayer_log::replace(&mut pending, question, Local::now())
+    };
+    write_record(app, record);
+}
+
+#[tauri::command]
+fn answer_prayer_check(app: AppHandle, answer: String) -> Result<(), String> {
+    let answer = prayer_log::Answer::from_button(&answer).ok_or("Geçersiz cevap.")?;
+    record_answer(&app, answer);
+    Ok(())
+}
+
+/// One window, reused: a question arriving while another is open replaces its
+/// text instead of stacking windows.
+fn ask(app: &AppHandle, question: &str) -> Result<(), String> {
+    let text = serde_json::to_string(question).map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window(PRAYER_CHECK) {
+        window
+            .eval(format!("window.setQuestion({text})"))
+            .map_err(|error| error.to_string())?;
+        if let Some((x, y)) = prayer_check_position(app) {
+            let _ = window.set_position(LogicalPosition::new(x, y));
+        }
+        window.show().map_err(|error| error.to_string())?;
+        return window.set_focus().map_err(|error| error.to_string());
+    }
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        PRAYER_CHECK,
+        WebviewUrl::App("prayer-check.html".into()),
+    )
+    .title("Ezan Vakti")
+    .inner_size(PRAYER_CHECK_WIDTH, PRAYER_CHECK_HEIGHT)
+    .resizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .focused(true)
+    .initialization_script(format!("window.__QUESTION__ = {text};"));
+    if let Some((x, y)) = prayer_check_position(app) {
+        builder = builder.position(x, y);
+    }
+    let window = builder.build().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
 /// Failures stay silent: a missed check only delays an update by one interval.
 async fn check_update(app: AppHandle) {
     let found = match app.updater() {
@@ -501,10 +620,32 @@ async fn run_ticker(app: AppHandle) {
             } else {
                 None
             };
+            let due: Vec<_> = due
+                .into_iter()
+                .map(|reminder| {
+                    let date =
+                        schedule::prayer_day(&live.boundaries, live.zone, reminder.vakit, now)
+                            .unwrap_or_else(|| now.with_timezone(&live.zone).date_naive());
+                    (reminder, date)
+                })
+                .collect();
             (live.view(now), pending, due, check)
         };
-        for reminder in due {
-            let _ = notify(&app, "Ezan Vakti", &reminder.message());
+        for (reminder, date) in due {
+            begin_question(
+                &app,
+                prayer_log::Pending {
+                    vakit: reminder.vakit,
+                    date,
+                    minutes_left: reminder.minutes_left,
+                    asked_at: Local::now(),
+                },
+            );
+            if ask(&app, &reminder.question()).is_err() {
+                // No window, so nobody can answer: this one is not a record.
+                *app.state::<Core>().pending.lock().unwrap() = None;
+                let _ = notify(&app, "Ezan Vakti", &reminder.message());
+            }
         }
         if check {
             tauri::async_runtime::spawn(check_update(app.clone()));
@@ -642,6 +783,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            answer_prayer_check,
             get_view,
             list_countries,
             list_cities,
@@ -652,6 +794,14 @@ pub fn run() {
             install_update
         ])
         .on_window_event(|window, event| match event {
+            // The question window must stay until answered and close for real.
+            _ if window.label() == PRAYER_CHECK => {
+                // A button takes the pending question first, so this only
+                // records a close made from the title bar.
+                if matches!(event, WindowEvent::Destroyed) {
+                    record_answer(window.app_handle(), prayer_log::Answer::Kapatildi);
+                }
+            }
             WindowEvent::Focused(false) => {
                 let core = window.state::<Core>();
                 *core.hidden_at.lock().unwrap() = Some(Instant::now());
@@ -678,6 +828,7 @@ pub fn run() {
                 live: Mutex::new(live),
                 update: Mutex::new(None),
                 hidden_at: Mutex::new(None),
+                pending: Mutex::new(None),
             });
             build_tray(app.handle())?;
             tauri::async_runtime::spawn(run_ticker(app.handle().clone()));
@@ -694,6 +845,19 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_question_opens_beside_the_cursor_and_stays_on_its_screen() {
+        let screen = (0.0, 0.0, 1440.0, 900.0);
+        assert_eq!(near_cursor((100.0, 200.0), screen), (112.0, 212.0));
+        assert_eq!(
+            near_cursor((1430.0, 890.0), screen),
+            (1440.0 - PRAYER_CHECK_WIDTH, 900.0 - PRAYER_CHECK_HEIGHT)
+        );
+        // A second monitor to the left keeps the window on that monitor.
+        let left = (-1920.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(near_cursor((-5.0, 10.0), left), (-PRAYER_CHECK_WIDTH, 22.0));
+    }
 
     fn location(timezone: Option<&str>) -> Location {
         Location {

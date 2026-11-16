@@ -222,3 +222,7 @@ footer {
 #reminder-rows select {
   width: 120px;
 }
+
+#question {
+  margin: 0;
+}

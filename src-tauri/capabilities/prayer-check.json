@@ -1,0 +1,6 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "prayer-check",
+  "windows": ["prayer-check"],
+  "permissions": ["core:window:allow-close"]
+}
