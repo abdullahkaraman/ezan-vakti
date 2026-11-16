@@ -481,17 +481,27 @@ fn ask(app: &AppHandle, question: &str) -> Result<(), String> {
     window.set_focus().map_err(|error| error.to_string())
 }
 
-/// Failures stay silent: a missed check only delays an update by one interval.
-async fn check_update(app: AppHandle) {
+/// Scheduled checks stay silent on failure: a missed check only delays an
+/// update by one interval. A check the user asked for always answers.
+async fn check_update(app: AppHandle, asked: bool) {
     let found = match app.updater() {
         Ok(updater) => updater.check().await,
         Err(error) => Err(error),
     };
     let update = match found {
         Ok(Some(update)) => update,
-        Ok(None) => return,
+        Ok(None) => {
+            if asked {
+                let version = app.package_info().version.to_string();
+                let _ = notify(&app, "Ezan Vakti", &format!("Güncelsin (v{version})."));
+            }
+            return;
+        }
         Err(error) => {
             eprintln!("güncelleme denetlenemedi: {error}");
+            if asked {
+                let _ = notify(&app, "Ezan Vakti", "Güncelleme denetlenemedi.");
+            }
             return;
         }
     };
@@ -502,7 +512,7 @@ async fn check_update(app: AppHandle) {
         let mut live = core.live.lock().unwrap();
         live.update.replace(version.clone()) == Some(version.clone())
     };
-    if !announced {
+    if !announced || asked {
         let _ = notify(
             &app,
             "Ezan Vakti güncellemesi",
@@ -648,7 +658,7 @@ async fn run_ticker(app: AppHandle) {
             }
         }
         if check {
-            tauri::async_runtime::spawn(check_update(app.clone()));
+            tauri::async_runtime::spawn(check_update(app.clone(), false));
         }
         if let Some(location) = pending {
             tauri::async_runtime::spawn(refresh(app.clone(), location));
@@ -744,7 +754,8 @@ fn toggle(app: &AppHandle, rect: &Rect) {
 
 fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
     let quit = MenuItem::with_id(app, "quit", "Çıkış", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&quit])?;
+    let check = MenuItem::with_id(app, "check", "Güncellemeleri denetle", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&check, &quit])?;
     TrayIconBuilder::with_id("main")
         .icon(Image::from_bytes(TRAY_ICON)?)
         .icon_as_template(cfg!(target_os = "macos"))
@@ -752,10 +763,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<TrayIcon> {
         .tooltip("Ezan Vakti")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
-            if event.id.as_ref() == "quit" {
-                app.exit(0);
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "check" => {
+                tauri::async_runtime::spawn(check_update(app.clone(), true));
             }
+            "quit" => app.exit(0),
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
