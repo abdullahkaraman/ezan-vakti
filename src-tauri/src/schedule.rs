@@ -3,7 +3,7 @@
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Prayer {
@@ -114,6 +114,80 @@ impl Vakit {
 
 /// Minutes before the end of each period; a missing period has no reminder.
 pub type Reminders = BTreeMap<Vakit, u32>;
+
+pub const MAX_REMINDER_MINUTES: u32 = 120;
+
+/// What the user chose for reminders: how to tell them, how early, and for
+/// which periods. Everything is off until they turn it on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReminderSettings {
+    /// Send a passive notification.
+    pub notify: bool,
+    /// Open the "did you pray?" window.
+    pub ask: bool,
+    pub minutes: u32,
+    pub vakits: BTreeSet<Vakit>,
+}
+
+impl Default for ReminderSettings {
+    fn default() -> Self {
+        Self {
+            notify: false,
+            ask: false,
+            minutes: 20,
+            vakits: BTreeSet::new(),
+        }
+    }
+}
+
+impl ReminderSettings {
+    /// Files up to v0.2.x kept minutes per period and always opened the
+    /// question window. The most common value wins; ties go to the smaller.
+    pub fn from_legacy(legacy: &Reminders) -> Self {
+        let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
+        for &minutes in legacy.values() {
+            *counts.entry(minutes).or_default() += 1;
+        }
+        let Some(minutes) = counts
+            .iter()
+            .max_by_key(|&(&minutes, &count)| (count, std::cmp::Reverse(minutes)))
+            .map(|(&minutes, _)| minutes)
+        else {
+            return Self::default();
+        };
+        Self {
+            notify: false,
+            ask: true,
+            minutes,
+            vakits: legacy.keys().copied().collect(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if (1..=MAX_REMINDER_MINUTES).contains(&self.minutes) {
+            Ok(())
+        } else {
+            Err("Geçersiz dakika değeri.")
+        }
+    }
+
+    /// The per-period schedule `due_reminders` works from; empty when neither
+    /// way of telling the user is on.
+    pub fn schedule(&self) -> Reminders {
+        if !(self.notify || self.ask) {
+            return Reminders::new();
+        }
+        self.vakits.iter().map(|&v| (v, self.minutes)).collect()
+    }
+
+    /// Whether the passive notification goes out for a due reminder. The
+    /// question window stands in for it only when it could not open and
+    /// notifications are off, so nobody is told twice.
+    pub fn should_notify(&self, question_failed: bool) -> bool {
+        self.notify || (self.ask && question_failed)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Due {
@@ -450,6 +524,87 @@ mod tests {
         let slept = at(Istanbul, "2026-11-05 14:00:00");
         let woke = at(Istanbul, "2026-11-05 15:30:00");
         assert!(due_reminders(&list, &wanted, slept, woke).is_empty());
+    }
+
+    #[test]
+    fn legacy_reminders_become_one_question_setting() {
+        let migrated = ReminderSettings::from_legacy(&reminders(&[
+            (Vakit::Sabah, 15),
+            (Vakit::Ogle, 30),
+            (Vakit::Aksam, 30),
+        ]));
+        assert_eq!(migrated.minutes, 30);
+        assert!(migrated.ask && !migrated.notify);
+        assert_eq!(
+            migrated.vakits,
+            BTreeSet::from([Vakit::Sabah, Vakit::Ogle, Vakit::Aksam])
+        );
+    }
+
+    #[test]
+    fn legacy_ties_take_the_smaller_minutes() {
+        let migrated =
+            ReminderSettings::from_legacy(&reminders(&[(Vakit::Sabah, 30), (Vakit::Ogle, 10)]));
+        assert_eq!(migrated.minutes, 10);
+    }
+
+    #[test]
+    fn empty_legacy_reminders_migrate_to_the_defaults() {
+        assert_eq!(
+            ReminderSettings::from_legacy(&Reminders::new()),
+            ReminderSettings::default()
+        );
+    }
+
+    #[test]
+    fn fresh_settings_are_off_with_twenty_minutes() {
+        let settings = ReminderSettings::default();
+        assert!(!settings.notify && !settings.ask && settings.vakits.is_empty());
+        assert_eq!(settings.minutes, 20);
+    }
+
+    #[test]
+    fn minutes_outside_one_to_the_maximum_are_rejected() {
+        let with = |minutes| ReminderSettings {
+            minutes,
+            ..Default::default()
+        };
+        assert!(with(1).validate().is_ok());
+        assert!(with(MAX_REMINDER_MINUTES).validate().is_ok());
+        assert!(with(0).validate().is_err());
+        assert!(with(MAX_REMINDER_MINUTES + 1).validate().is_err());
+    }
+
+    #[test]
+    fn nothing_is_scheduled_unless_a_way_of_telling_is_on() {
+        let mut settings = ReminderSettings {
+            vakits: BTreeSet::from([Vakit::Ogle]),
+            minutes: 10,
+            ..Default::default()
+        };
+        assert!(settings.schedule().is_empty());
+        settings.notify = true;
+        assert_eq!(settings.schedule(), reminders(&[(Vakit::Ogle, 10)]));
+        settings.notify = false;
+        settings.ask = true;
+        assert_eq!(settings.schedule(), reminders(&[(Vakit::Ogle, 10)]));
+    }
+
+    #[test]
+    fn notification_is_sent_per_the_toggles_and_the_question_fallback() {
+        let with = |notify, ask| ReminderSettings {
+            notify,
+            ask,
+            ..Default::default()
+        };
+        // notify only, ask only, both, neither; each with the question working or not.
+        assert!(with(true, false).should_notify(false));
+        assert!(with(true, true).should_notify(false));
+        assert!(with(true, true).should_notify(true));
+        assert!(!with(false, true).should_notify(false));
+        assert!(with(false, true).should_notify(true));
+        assert!(!with(false, false).should_notify(false));
+        assert!(!with(false, false).should_notify(true));
     }
 
     #[test]

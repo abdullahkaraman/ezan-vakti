@@ -7,7 +7,7 @@ pub mod tray_digits;
 use chrono::{DateTime, Duration, Local, Utc};
 use chrono_tz::Tz;
 use diyanet::{Api, Item};
-use schedule::{Boundary, Prayer, Reminders, Vakit};
+use schedule::{Boundary, Prayer, ReminderSettings, Vakit};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -28,7 +28,6 @@ const LIST_MAX_AGE_DAYS: i64 = 30;
 const EDGE_MARGIN: f64 = 8.0;
 const FIRST_UPDATE_CHECK_SECONDS: i64 = 20;
 const UPDATE_CHECK_HOURS: i64 = 6;
-const MAX_REMINDER_MINUTES: u32 = 120;
 const PRAYER_CHECK: &str = "prayer-check";
 const PRAYER_CHECK_WIDTH: f64 = 340.0;
 const PRAYER_CHECK_HEIGHT: f64 = 150.0;
@@ -57,7 +56,7 @@ struct Row {
 struct ReminderRow {
     key: Vakit,
     name: &'static str,
-    minutes: Option<u32>,
+    selected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -73,6 +72,7 @@ struct View {
     rows: Vec<Row>,
     error: Option<String>,
     reminders: Vec<ReminderRow>,
+    reminder_settings: ReminderSettings,
     version: &'static str,
     update: Option<String>,
 }
@@ -182,9 +182,10 @@ impl Live {
                 .map(|vakit| ReminderRow {
                     key: vakit,
                     name: vakit.name(),
-                    minutes: self.saved.reminders.get(&vakit).copied(),
+                    selected: self.saved.reminders.vakits.contains(&vakit),
                 })
                 .collect(),
+            reminder_settings: self.saved.reminders.clone(),
             version: env!("CARGO_PKG_VERSION"),
             update: self.update.clone(),
         }
@@ -320,21 +321,16 @@ async fn set_location(
 }
 
 #[tauri::command]
-fn set_reminders(
+fn set_reminder_settings(
     app: AppHandle,
     core: State<'_, Core>,
-    reminders: Reminders,
+    settings: ReminderSettings,
 ) -> Result<View, String> {
-    if reminders
-        .values()
-        .any(|minutes| !(1..=MAX_REMINDER_MINUTES).contains(minutes))
-    {
-        return Err("Geçersiz dakika değeri.".into());
-    }
+    settings.validate().map_err(str::to_string)?;
     let view = {
         let mut live = core.live.lock().unwrap();
         let mut saved = live.saved.clone();
-        saved.reminders = reminders;
+        saved.reminders = settings;
         core.store.save(&saved);
         live.replace(saved);
         live.view(Utc::now())
@@ -608,11 +604,11 @@ async fn run_ticker(app: AppHandle) {
     loop {
         let now = Utc::now();
         let core = app.state::<Core>();
-        let (view, pending, due, check) = {
+        let (view, pending, due, settings, check) = {
             let mut live = core.live.lock().unwrap();
             let due = schedule::due_reminders(
                 &live.boundaries,
-                &live.saved.reminders,
+                &live.saved.reminders.schedule(),
                 live.reminders_checked,
                 now,
             );
@@ -639,21 +635,33 @@ async fn run_ticker(app: AppHandle) {
                     (reminder, date)
                 })
                 .collect();
-            (live.view(now), pending, due, check)
+            (
+                live.view(now),
+                pending,
+                due,
+                live.saved.reminders.clone(),
+                check,
+            )
         };
         for (reminder, date) in due {
-            begin_question(
-                &app,
-                prayer_log::Pending {
-                    vakit: reminder.vakit,
-                    date,
-                    minutes_left: reminder.minutes_left,
-                    asked_at: Local::now(),
-                },
-            );
-            if ask(&app, &reminder.question()).is_err() {
-                // No window, so nobody can answer: this one is not a record.
-                *app.state::<Core>().pending.lock().unwrap() = None;
+            let mut question_failed = false;
+            if settings.ask {
+                begin_question(
+                    &app,
+                    prayer_log::Pending {
+                        vakit: reminder.vakit,
+                        date,
+                        minutes_left: reminder.minutes_left,
+                        asked_at: Local::now(),
+                    },
+                );
+                if ask(&app, &reminder.question()).is_err() {
+                    // No window, so nobody can answer: this one is not a record.
+                    *app.state::<Core>().pending.lock().unwrap() = None;
+                    question_failed = true;
+                }
+            }
+            if settings.should_notify(question_failed) {
                 let _ = notify(&app, "Ezan Vakti", &reminder.message());
             }
         }
@@ -802,7 +810,7 @@ pub fn run() {
             list_cities,
             list_districts,
             set_location,
-            set_reminders,
+            set_reminder_settings,
             test_notification,
             install_update
         ])
@@ -890,7 +898,7 @@ mod tests {
         let saved = Saved {
             location: Some(location(Some("Europe/Istanbul"))),
             days: diyanet::parse_times(body).unwrap(),
-            reminders: Reminders::new(),
+            reminders: ReminderSettings::default(),
         };
         Live::new(saved, now)
     }

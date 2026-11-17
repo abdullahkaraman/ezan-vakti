@@ -24,19 +24,36 @@
         <button id="install" type="button">Güncelle</button>
       </p>
       <footer>
-        <button id="open-reminders" type="button">Bildirimler</button>
+        <button id="open-settings" type="button">Ayarlar</button>
         <span id="version" class="note"></span>
       </footer>
     </main>
 
-    <form id="reminders" hidden>
-      <h1>Vakit çıkmadan haber ver</h1>
-      <div id="reminder-rows"></div>
-      <p id="reminder-error" class="error" hidden></p>
+    <form id="settings" hidden>
+      <h1>Ayarlar</h1>
+      <div class="setting">
+        <span>Konum</span>
+        <span id="settings-location" class="value"></span>
+        <button id="settings-change" type="button">Değiştir</button>
+      </div>
+      <label class="setting">
+        Vakit çıkmadan bildirim
+        <input id="notify" type="checkbox" />
+      </label>
+      <label class="setting">
+        'Namazı kıldın mı?' sorusu
+        <input id="ask" type="checkbox" />
+      </label>
+      <label class="setting">
+        Kaç dakika kala
+        <select id="minutes"></select>
+      </label>
+      <div id="vakits" class="vakits"></div>
+      <p id="settings-error" class="error" hidden></p>
       <p class="note">Bildirim gelmiyorsa sistem ayarlarından Ezan Vakti'ye izin ver.</p>
       <div class="actions">
-        <button id="test" type="button">Dene</button>
-        <button id="close-reminders" type="button" class="primary">Tamam</button>
+        <button id="test" type="button">Bildirimi dene</button>
+        <button id="close-settings" type="button" class="primary">Tamam</button>
       </div>
     </form>
 

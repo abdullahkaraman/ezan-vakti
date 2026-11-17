@@ -205,22 +205,46 @@ footer {
   opacity: 0.6;
 }
 
-#reminder-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+#settings {
+  overflow-y: auto;
 }
 
-#reminder-rows label {
+.setting {
   align-items: center;
   color: var(--text);
   flex-direction: row;
   font-size: 14px;
+  gap: 8px;
   justify-content: space-between;
 }
 
-#reminder-rows select {
+.setting .value {
+  color: var(--muted);
+  flex: 1;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setting select {
   width: 120px;
+}
+
+.vakits {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.vakit {
+  align-items: center;
+  color: var(--text);
+  flex-direction: row;
+  font-size: 14px;
+  gap: 6px;
 }
 
 #question {

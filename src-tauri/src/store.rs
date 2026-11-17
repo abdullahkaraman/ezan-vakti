@@ -2,7 +2,7 @@
 //! absent: a corrupt cache must never keep the app from starting.
 
 use crate::diyanet::Item;
-use crate::schedule::{DayTimes, Reminders};
+use crate::schedule::{DayTimes, ReminderSettings, Reminders};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs;
@@ -23,12 +23,45 @@ pub struct Location {
 
 /// Location and times live together so one can never outlive the other.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "SavedFile")]
 pub struct Saved {
     pub location: Option<Location>,
     pub days: Vec<DayTimes>,
-    /// Absent in files written by v0.1.0.
+    pub reminders: ReminderSettings,
+}
+
+/// The file as it may have been written: `reminders` was a per-period map
+/// until v0.2.x and absent in v0.1.0; it is now the settings struct.
+#[derive(Deserialize)]
+struct SavedFile {
+    location: Option<Location>,
+    days: Vec<DayTimes>,
     #[serde(default)]
-    pub reminders: Reminders,
+    reminders: Option<RemindersFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RemindersFile {
+    // First: the settings struct ignores unknown keys, so it would swallow a
+    // legacy map as defaults. A settings object never parses as a map of periods.
+    Legacy(Reminders),
+    Settings(ReminderSettings),
+}
+
+impl From<SavedFile> for Saved {
+    fn from(file: SavedFile) -> Self {
+        let reminders = match file.reminders {
+            None => ReminderSettings::default(),
+            Some(RemindersFile::Settings(settings)) => settings,
+            Some(RemindersFile::Legacy(legacy)) => ReminderSettings::from_legacy(&legacy),
+        };
+        Self {
+            location: file.location,
+            days: file.days,
+            reminders,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +127,7 @@ fn write<T: Serialize>(path: &Path, value: &T) {
 mod tests {
     use super::*;
     use crate::diyanet::parse_times;
+    use crate::schedule::Vakit;
 
     fn temporary(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("ezan-vakti-{name}-{}", std::process::id()));
@@ -121,7 +155,12 @@ mod tests {
         let saved = Saved {
             location: Some(location()),
             days: parse_times(include_str!("../tests/fixtures/vakitler-9541.json")).unwrap(),
-            reminders: [(crate::schedule::Vakit::Ikindi, 15)].into_iter().collect(),
+            reminders: ReminderSettings {
+                notify: true,
+                ask: false,
+                minutes: 15,
+                vakits: [Vakit::Ikindi, Vakit::Yatsi].into_iter().collect(),
+            },
         };
         store.save(&saved);
         assert_eq!(store.load(), saved);
@@ -137,7 +176,45 @@ mod tests {
         fs::write(dir.join("state.json"), old.to_string()).unwrap();
         let saved = Store::new(dir.clone()).load();
         assert_eq!(saved.location, Some(location()));
-        assert!(saved.reminders.is_empty());
+        assert_eq!(saved.reminders, ReminderSettings::default());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn per_period_reminders_from_v0_2_load_as_the_question_setting() {
+        let dir = temporary("legacy-map");
+        fs::create_dir_all(&dir).unwrap();
+        let old = serde_json::json!({
+            "location": location(),
+            "days": [],
+            "reminders": { "Sabah": 20, "Ogle": 20, "Yatsi": 45 },
+        });
+        fs::write(dir.join("state.json"), old.to_string()).unwrap();
+        let saved = Store::new(dir.clone()).load();
+        assert_eq!(saved.location, Some(location()));
+        assert_eq!(
+            saved.reminders,
+            ReminderSettings {
+                notify: false,
+                ask: true,
+                minutes: 20,
+                vakits: [Vakit::Sabah, Vakit::Ogle, Vakit::Yatsi]
+                    .into_iter()
+                    .collect(),
+            }
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_empty_legacy_map_loads_as_the_defaults() {
+        let dir = temporary("legacy-empty");
+        fs::create_dir_all(&dir).unwrap();
+        let old = serde_json::json!({ "location": location(), "days": [], "reminders": {} });
+        fs::write(dir.join("state.json"), old.to_string()).unwrap();
+        let saved = Store::new(dir.clone()).load();
+        assert_eq!(saved.location, Some(location()));
+        assert_eq!(saved.reminders, ReminderSettings::default());
         fs::remove_dir_all(dir).unwrap();
     }
 

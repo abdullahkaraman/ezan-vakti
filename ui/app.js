@@ -3,6 +3,7 @@ const { listen } = window.__TAURI__.event;
 
 const element = (id) => document.getElementById(id);
 const times = element("times");
+const settings = element("settings");
 const picker = element("picker");
 const levels = {
   country: element("country"),
@@ -16,6 +17,8 @@ const lists = { country: [], city: [], district: [] };
 let selectionToken = 0;
 let hasLocation = false;
 let latestView = null;
+// Where the location picker was opened from, so closing it returns there.
+let pickerOrigin = times;
 
 function showError(target, message) {
   target.textContent = message ?? "";
@@ -26,6 +29,7 @@ function render(view) {
   latestView = view;
   hasLocation = view.location !== null;
   element("location").textContent = view.location ?? "Konum seçilmedi";
+  element("settings-location").textContent = view.location ?? "Seçilmedi";
   element("next").textContent = view.next ?? "";
   element("remaining").textContent = view.remaining ?? "—";
 
@@ -51,53 +55,64 @@ function render(view) {
   element("update-text").textContent = view.update ? `Yeni sürüm: ${view.update}` : "";
 }
 
-function reminderRow(row) {
+function vakitBox(row) {
   const label = document.createElement("label");
-  label.textContent = row.name;
-  const select = document.createElement("select");
-  select.dataset.key = row.key;
-
-  const off = document.createElement("option");
-  off.value = "";
-  off.textContent = "Kapalı";
-  select.append(off);
-  const choices = reminderChoices.includes(row.minutes) || row.minutes === null
-    ? reminderChoices
-    : [...reminderChoices, row.minutes];
-  for (const minutes of choices) {
-    const option = document.createElement("option");
-    option.value = minutes;
-    option.textContent = `${minutes} dk kala`;
-    select.append(option);
-  }
-  select.value = row.minutes ?? "";
-  select.addEventListener("change", saveReminders);
-  label.append(select);
+  label.className = "vakit";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.dataset.key = row.key;
+  box.checked = row.selected;
+  box.addEventListener("change", saveSettings);
+  const name = document.createElement("span");
+  name.textContent = row.name;
+  label.append(box, name);
   return label;
 }
 
-async function saveReminders() {
-  const reminders = {};
-  for (const select of element("reminder-rows").querySelectorAll("select")) {
-    if (select.value) reminders[select.dataset.key] = Number(select.value);
-  }
-  showError(element("reminder-error"), null);
+function fillMinutes(current) {
+  const choices = reminderChoices.includes(current) ? reminderChoices : [...reminderChoices, current];
+  element("minutes").replaceChildren(
+    ...choices.map((minutes) => {
+      const option = document.createElement("option");
+      option.value = minutes;
+      option.textContent = `${minutes} dk kala`;
+      return option;
+    }),
+  );
+  element("minutes").value = current;
+}
+
+async function saveSettings() {
+  const vakits = [...element("vakits").querySelectorAll("input")]
+    .filter((box) => box.checked)
+    .map((box) => box.dataset.key);
+  const settings = {
+    notify: element("notify").checked,
+    ask: element("ask").checked,
+    minutes: Number(element("minutes").value),
+    vakits,
+  };
+  showError(element("settings-error"), null);
   try {
-    render(await invoke("set_reminders", { reminders }));
+    render(await invoke("set_reminder_settings", { settings }));
   } catch (message) {
-    showError(element("reminder-error"), message);
+    showError(element("settings-error"), message);
   }
 }
 
-function openReminders() {
+function openSettings() {
   times.hidden = true;
-  element("reminders").hidden = false;
-  showError(element("reminder-error"), null);
-  element("reminder-rows").replaceChildren(...latestView.reminders.map(reminderRow));
+  settings.hidden = false;
+  showError(element("settings-error"), null);
+  const current = latestView.reminder_settings;
+  element("notify").checked = current.notify;
+  element("ask").checked = current.ask;
+  fillMinutes(current.minutes);
+  element("vakits").replaceChildren(...latestView.reminders.map(vakitBox));
 }
 
-function closeReminders() {
-  element("reminders").hidden = true;
+function closeSettings() {
+  settings.hidden = true;
   times.hidden = false;
 }
 
@@ -160,8 +175,9 @@ async function loadCities() {
   }
 }
 
-async function openPicker() {
-  times.hidden = true;
+async function openPicker(origin = times) {
+  pickerOrigin = origin;
+  origin.hidden = true;
   picker.hidden = false;
   element("cancel").hidden = !hasLocation;
   if (lists.country.length === 0) {
@@ -173,23 +189,25 @@ async function openPicker() {
 
 function closePicker() {
   picker.hidden = true;
-  times.hidden = false;
+  pickerOrigin.hidden = false;
 }
 
 levels.country.addEventListener("change", loadCities);
 levels.city.addEventListener("change", loadDistricts);
 levels.district.addEventListener("change", syncSave);
-element("change").addEventListener("click", openPicker);
+element("change").addEventListener("click", () => openPicker(times));
+element("settings-change").addEventListener("click", () => openPicker(settings));
 element("cancel").addEventListener("click", closePicker);
 
-element("open-reminders").addEventListener("click", openReminders);
-element("close-reminders").addEventListener("click", closeReminders);
-element("reminders").addEventListener("submit", (event) => event.preventDefault());
+element("open-settings").addEventListener("click", openSettings);
+element("close-settings").addEventListener("click", closeSettings);
+settings.addEventListener("submit", (event) => event.preventDefault());
+for (const id of ["notify", "ask", "minutes"]) element(id).addEventListener("change", saveSettings);
 element("test").addEventListener("click", async () => {
   try {
     await invoke("test_notification");
   } catch (message) {
-    showError(element("reminder-error"), message);
+    showError(element("settings-error"), message);
   }
 });
 element("install").addEventListener("click", async () => {
@@ -234,5 +252,5 @@ listen("view-changed", (event) => render(event.payload));
 
 invoke("get_view").then((view) => {
   render(view);
-  if (!hasLocation) openPicker();
+  if (!hasLocation) openPicker(times);
 });
